@@ -189,6 +189,13 @@ function classifyImageData(imageData) {
 function classifyVideoData() {
   if (isVideoMode) {
     predict(video);
+    var canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    var canvasContext = canvas.getContext("2d");
+    canvasContext.drawImage(video, 0, 0);
+    var imageData = canvas.toDataURL('image/png');
+    img.src = "data:image/png;base64," + imageData;
   } else {
     PersonalImageClassifier.error(ERROR_CANNOT_CLASSIFY_VIDEO_IN_IMAGE_MODE);
   }
