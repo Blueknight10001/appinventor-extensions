@@ -36,6 +36,7 @@ import com.google.appinventor.components.runtime.util.MapFactory.MapCircle;
 import com.google.appinventor.components.runtime.util.MapFactory.MapController;
 import com.google.appinventor.components.runtime.util.MapFactory.MapEventListener;
 import com.google.appinventor.components.runtime.util.MapFactory.MapFeature;
+import com.google.appinventor.components.runtime.util.MapFactory.MapFeatureCollection;
 import com.google.appinventor.components.runtime.util.MapFactory.MapLineString;
 import com.google.appinventor.components.runtime.util.MapFactory.MapMarker;
 import com.google.appinventor.components.runtime.util.MapFactory.MapPolygon;
@@ -49,6 +50,7 @@ import org.osmdroid.events.MapListener;
 import org.osmdroid.events.ScrollEvent;
 import org.osmdroid.events.ZoomEvent;
 import org.osmdroid.tileprovider.MapTile;
+import org.osmdroid.tileprovider.constants.OpenStreetMapTileProviderConstants;
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
 import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
@@ -113,6 +115,21 @@ class NativeOpenStreetMapController implements MapController, MapListener {
   private ZoomControlView zoomControls = null;
   private float lastAzimuth = Float.NaN;
   private ScaleBarOverlay scaleBar;
+
+  /**
+   * This set stores feature collections that are hidden (Visible = False).
+   */
+  private Set<MapFeatureCollection> hiddenFeatureCollections = new HashSet<>();
+
+  /**
+   * This set stores the features contained within feature collections captured by
+   * {@link #hiddenFeatureCollections}. This is used to test whether the features should be
+   * displayed when toggling their Visible property.
+   */
+  private Set<MapFeature> hiddenFeatures = new HashSet<>();
+
+  private static final float[] ANCHOR_HORIZONTAL = { Float.NaN, 0.0f, 1.0f, 0.5f };
+  private static final float[] ANCHOR_VERTICAL = { Float.NaN, 0.0f, 0.5f, 1.0f };
 
   private static class AppInventorLocationSensorAdapter implements IMyLocationProvider,
       LocationSensor.LocationSensorListener {
@@ -263,6 +280,7 @@ class NativeOpenStreetMapController implements MapController, MapListener {
   private final AppInventorLocationSensorAdapter locationProvider;
 
   NativeOpenStreetMapController(final Form form) {
+    OpenStreetMapTileProviderConstants.setUserAgentValue(form.getApplication().getPackageName());
     File osmdroid = new File(form.getCacheDir(), "osmdroid");
     if (osmdroid.exists() || osmdroid.mkdirs()) {
       Configuration.getInstance().setOsmdroidBasePath(osmdroid);
@@ -676,10 +694,8 @@ class NativeOpenStreetMapController implements MapController, MapListener {
           }
           ((MapRectangle) component).updateBounds(north, west, south, east);
         } else {
-          ((MapPolygon) component).updatePoints(Collections.singletonList(polygon.getPoints()));
-          List<List<GeoPoint>> holes = new ArrayList<List<GeoPoint>>();
-          holes.addAll(polygon.getHoles());
-          ((MapPolygon) component).updateHolePoints(Collections.singletonList(holes));
+          ((MapPolygon) component).updatePoints(((MultiPolygon) polygon).getMultiPoints());
+          ((MapPolygon) component).updateHolePoints(((MultiPolygon) polygon).getMultiHoles());
         }
         for (MapEventListener listener : eventListeners) {
           listener.onFeatureStopDrag(component);
@@ -718,6 +734,8 @@ class NativeOpenStreetMapController implements MapController, MapListener {
   public void updateFeaturePosition(MapMarker aiMarker) {
     Marker marker = (Marker)featureOverlays.get(aiMarker);
     if (marker != null) {
+      marker.setAnchor(ANCHOR_HORIZONTAL[aiMarker.AnchorHorizontal()],
+          ANCHOR_VERTICAL[aiMarker.AnchorVertical()]);
       marker.setPosition(new GeoPoint(aiMarker.Latitude(), aiMarker.Longitude()));
       view.invalidate();
     }
@@ -737,6 +755,14 @@ class NativeOpenStreetMapController implements MapController, MapListener {
     MultiPolygon polygon = (MultiPolygon) featureOverlays.get(aiPolygon);
     if (polygon != null) {
       polygon.setMultiPoints(aiPolygon.getPoints());
+      view.invalidate();
+    }
+  }
+
+  @Override
+  public void updateFeatureHoles(MapPolygon aiPolygon) {
+    MultiPolygon polygon = (MultiPolygon) featureOverlays.get(aiPolygon);
+    if (polygon != null) {
       polygon.setMultiHoles(aiPolygon.getHolePoints());
       view.invalidate();
     }
@@ -972,6 +998,7 @@ class NativeOpenStreetMapController implements MapController, MapListener {
 
       @Override
       public void onSuccess(BitmapDrawable result) {
+        result.setAlpha((int) Math.round(aiMarker.FillOpacity() * 255.0f));
         callback.onSuccess(result);
       }
     });
@@ -1024,6 +1051,7 @@ class NativeOpenStreetMapController implements MapController, MapListener {
         path.baseStyle.stroke = new SVG.Colour(strokePaint.getColor());
         path.baseStyle.strokeOpacity = strokePaint.getAlpha()/255.0f;
         path.baseStyle.strokeWidth = strokeWidth;
+        path.baseStyle.specifiedFlags = 0x3d;
         if (path.style != null) {
           if ((path.style.specifiedFlags & SPECIFIED_FILL) == 0) {
             path.style.fill = new SVG.Colour(fillPaint.getColor());
@@ -1132,7 +1160,9 @@ class NativeOpenStreetMapController implements MapController, MapListener {
 
   @Override
   public void showFeature(MapFeature feature) {
-    showOverlay(featureOverlays.get(feature));
+    if (!hiddenFeatures.contains(feature)) {
+      showOverlay(featureOverlays.get(feature));
+    }
   }
 
   protected void showOverlay(OverlayWithIW overlay) {
@@ -1154,6 +1184,35 @@ class NativeOpenStreetMapController implements MapController, MapListener {
   public boolean isFeatureVisible(MapFeature feature) {
     OverlayWithIW overlay = featureOverlays.get(feature);
     return overlay != null && view.getOverlayManager().contains(overlay);
+  }
+
+  @Override
+  public boolean isFeatureCollectionVisible(MapFeatureCollection collection) {
+    return !hiddenFeatureCollections.contains(collection);
+  }
+
+  @Override
+  public void setFeatureCollectionVisible(MapFeatureCollection collection, boolean visible) {
+    if ((!visible && hiddenFeatureCollections.contains(collection))
+        || (visible && !hiddenFeatureCollections.contains(collection))) {
+      // Nothing to do
+      return;
+    }
+    if (visible) {
+      hiddenFeatureCollections.remove(collection);
+      for (MapFeature feature : collection) {
+        hiddenFeatures.remove(feature);
+        if (feature.Visible()) {
+          showFeature(feature);
+        }
+      }
+    } else {
+      hiddenFeatureCollections.add(collection);
+      for (MapFeature feature : collection) {
+        hiddenFeatures.add(feature);
+        hideFeature(feature);
+      }
+    }
   }
 
   @Override
@@ -1282,6 +1341,14 @@ class NativeOpenStreetMapController implements MapController, MapListener {
       }
     }
 
+    public List<List<GeoPoint>> getMultiPoints() {
+      List<List<GeoPoint>> result = new ArrayList<>();
+      for (Polygon p : children) {
+        result.add(p.getPoints());
+      }
+      return result;
+    }
+
     public void setMultiPoints(List<List<GeoPoint>> points) {
       Iterator<Polygon> polygonIterator = children.iterator();
       Iterator<List<GeoPoint>> pointIterator = points.iterator();
@@ -1304,6 +1371,15 @@ class NativeOpenStreetMapController implements MapController, MapListener {
         p.setOnDragListener(dragListener);
         children.add(p);
       }
+    }
+
+    @SuppressWarnings("unchecked")  // upcasting nested ArrayList to List
+    public List<List<List<GeoPoint>>> getMultiHoles() {
+      List<List<List<GeoPoint>>> result = new ArrayList<>();
+      for (Polygon p : children) {
+        result.add((List) p.getHoles());
+      }
+      return result;
     }
 
     public void setMultiHoles(List<List<List<GeoPoint>>> holes) {
