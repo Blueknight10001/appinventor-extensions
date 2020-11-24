@@ -311,11 +311,21 @@ public final class PersonalImageClassifier extends AndroidNonvisibleComponent im
     webview.evaluateJavascript("classifyVideoData();", null);
   }
 
+  @SimpleFunction(description = "Captures the current frame of the video input as a base64 PNG image string, triggering the SavedVideoData event.")
+  public void SaveVideoData() {
+    form.dispatchErrorOccurredEvent(this, "InputMode", ErrorMessages.ERROR_EXTENSION_ERROR, ERROR_INVALID_INPUT_MODE, LOG_TAG, "This Function Actually Works");
+    assertWebView("SaveVideoData");
+    webview.evaluateJavascript("saveVideoData();", null);
+  }
+
   @SimpleEvent(description = "Event indicating that the classifier is ready.")
   public void ClassifierReady() {
     InputMode(inputMode);
     EventDispatcher.dispatchEvent(this, "ClassifierReady");
   }
+
+  @SimpleEvent(description = "Event indicating that the data of the current video frame is ready.")
+  public void SavedVideoData(String image) { EventDispatcher.dispatchEvent(this, "SavedVideoData", image); }
 
   @SimpleEvent(description = "Event indicating that classification has finished successfully. Result is of the form [[class1, confidence1], [class2, confidence2], ..., [class10, confidence10]].")
   public void GotClassification(YailList result) {
@@ -349,6 +359,17 @@ public final class PersonalImageClassifier extends AndroidNonvisibleComponent im
         @Override
         public void run() {
           ClassifierReady();
+        }
+      });
+    }
+
+    @JavascriptInterface
+    public void saved(final String image) {
+      Log.d(LOG_TAG, "Entered saved: " + image);
+      form.runOnUiThread(new Runnable() {
+        @Override
+        public void run() {
+          SavedVideoData(image);
         }
       });
     }
